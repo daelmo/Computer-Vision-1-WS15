@@ -10,37 +10,43 @@
 #include <stdio.h>
 
 
+/*
+algo: Harris Corner Detector
+author: Josephine Rehak
+
+*/
+
 using namespace cv;
 using namespace std;
 
-
+//holds data structure for each pixel in image
 struct Pixel{
     float dX,dY;
     Mat sumTensor;
     float R;
-    bool inImg=false;
 };
 
-vector<Pixel> pixValues;
+int channels = 3.0;
 
-cv::Mat inputImage, workImage, outputImage;
-vector<float> GaussMask;
+vector<Pixel> pixValues; //holds set of pixels of image
 
-int sigma_value, threshold_value, alpha_value;
-const double sigma_max = 100, alpha_max=20, threshold_max=1000;
-char thresholdTrackbar[20]="treshold %", sigmaTrackbar[20] = "sigma 1/1000", alphaTrackbar[20]="alpha 0.4-0.6";
-int windowWidth;
+cv::Mat inputImage, workImage, outputImage; // working matrices
+vector<float> GaussMask; // holds values of GausMask
+
+int sigma_value, threshold_value, alpha_value; // holds slider values
+const double sigma_max = 100, alpha_max=20, threshold_max=30; // max slider values
+char thresholdTrackbar[25]="treshold:5 to 5^-25", sigmaTrackbar[20] = "sigma: 1/1000", alphaTrackbar[20]="alpha: 0.4-0.6";
+int windowWidth; // width of quadtratic window
 
 void changeSigma(int sigma, void*);
 void changeAlpha(int alpha, void*);
 void changeThreshold(int threshold, void*);
 
-
-
-Vec3f getColor(int y,int x){
-    if (x<0 || x>= workImage.cols || y<0 || y>= workImage.rows){
-        return Vec3f(0,0,0);
-    }
+Vec3f getColor(int y,int x){ // get color of Pixel in original Image on x,y
+    if (x<0){x=0;}
+    if (x>= workImage.cols){x=workImage.cols;}
+    if (y<0){x=0;}
+    if (y>= workImage.rows){y=workImage.rows;}
     return workImage.at<Vec3f>(y, x);
 }
 
@@ -49,7 +55,8 @@ void calcWindowWidth(){
     windowWidth= (int) 1+2*ceil(sigma_value*sqrt(-2*log(0.2)));
 }
 
-//calc weight for each window pixel
+
+//calc weight for each window pixel + build Gaussmask
 void calcGaussMask(){
     int delta=(windowWidth-1)/2;
     int x=ceil(windowWidth/2);
@@ -63,6 +70,7 @@ void calcGaussMask(){
     }
 }
 
+// calculates dx + dy out of gradient and colors for each pixel
 void calcDerivatives(){
     Vec3f top, bottom, left, right;
     for(int y=0; y < workImage.rows; y++){
@@ -76,27 +84,28 @@ void calcDerivatives(){
             bottom = getColor(y+1,x);
             float dx = 0;
             float dy = 0;
-            for(int i=0; i<workImage.channels(); i++){
-                dy = max((bottom.val[i]-top.val[i])/2, dy);
-                dx = max((right.val[i]-left.val[i])/2, dx);
+            for(int i=0; i<channels; i++){
+                dy +=(bottom.val[i]-top.val[i])/2;
+                dx += (right.val[i]-left.val[i])/2;
             } //TODO test different settings like average, addition. etc
-        pixValues.at(y*workImage.cols+x).dX = dx;
-        pixValues.at(y*workImage.cols+x).dY = dy;
+        pixValues.at(y*workImage.cols+x).dX = dx/channels;
+        pixValues.at(y*workImage.cols+x).dY = dy/channels;
+
         }
     }
 }
 
+// calculates Tensor for each pixel
 void calcTensor(){
-    //calculate Tensor
     int cy,cx, delta=(windowWidth-1)/2;
     Mat tensor;
-    Mat tmpMat= Mat(1,3,CV_32FC1, Scalar(0));
+    Mat tmpMat= Mat(1,3,CV_32FC1, Scalar(0)); // values for dx*dx dx*dy... in 3x1 matrix
     Pixel pix;
 
     for(int y=0; y < workImage.rows; y++){
         for(int x=0; x<workImage.cols; x++){
             tensor = Mat(1,3,CV_32FC1, Scalar(0));
-
+            // go through all pixels in window
             for(int i=0; i<windowWidth*windowWidth; i++){ //i for window
                 cy=y-delta+floor(i/windowWidth);
                 cx=x-delta+(i % windowWidth);
@@ -113,11 +122,12 @@ void calcTensor(){
             }
             pixValues.at(y*workImage.cols+x).sumTensor = tensor;
 
+
         }
     }
 }
 
-
+// function called when sigma on slider changed
 void changeSigma(int sigmaSliderValue, void * ){
     sigma_value = sigmaSliderValue*(4-0.1)/sigma_max + 0.1;
     calcWindowWidth();
@@ -127,24 +137,27 @@ void changeSigma(int sigmaSliderValue, void * ){
     changeAlpha(alpha_value,0);
 }
 
+// calculates score R for each pixel R= det(a) - alpha*trace(A)*trace(A)
 void calcScore(int alpha){
-    float det, sqTrace;
+    float det, trace;
     for(int y=0; y < workImage.rows; y++){
         for(int x=0; x<workImage.cols; x++){
             Pixel pix = pixValues.at(y*workImage.cols+x);
             det= pix.sumTensor.at<float>(0,0) * pix.sumTensor.at<float>(0,2) - pix.sumTensor.at<float>(0,1)*pix.sumTensor.at<float>(0,1);
-            sqTrace = (pix.sumTensor.at<float>(0,0)+pix.sumTensor.at<float>(0,2))*(pix.sumTensor.at<float>(0,0)+pix.sumTensor.at<float>(0,2)); //trace*trace
-              pixValues.at(y*workImage.cols+x).R = det - alpha*sqTrace;
+            trace = pix.sumTensor.at<float>(0,0)+pix.sumTensor.at<float>(0,2);
+              pixValues.at(y*workImage.cols+x).R = det - alpha*trace*trace;
         }
     }
 }
 
+// function called when alpha on slider changed
 void changeAlpha(int alphaSliderValue, void * ){
     alpha_value=alphaSliderValue/200 +0.4 ;
     calcScore(alpha_value);
     changeThreshold(threshold_value,0);
 }
 
+// check score of all neighbours to find maxima
 bool higherThanNeighbour(int y, int x){
     int nb[8][2]= {{y-1,x-1},{y-1,x},{y-1,x+1},{y,x-1},{y,x+1},{y+1,x-1},{y+1,x},{y+1,x+1}};
 
@@ -153,21 +166,18 @@ bool higherThanNeighbour(int y, int x){
         if(pixValues.at(nb[i][0]*workImage.cols+nb[i][1]).R > pixValues.at(y*workImage.cols+x).R){return false;}
     }
     return true;
-
-
 }
 
-
-
+// function called when threshold on slider changed
 void changeThreshold(int thresholdSliderValue, void *){
-    float threshold = thresholdSliderValue/500 +0.1;
+    float threshold = pow(5,-(thresholdSliderValue+1));
 
     for(int y=0; y < workImage.rows; y++){
         for(int x=0; x<workImage.cols; x++){
             if(higherThanNeighbour(y,x) && pixValues.at(y*workImage.cols+x).R>threshold){
-              outputImage.at<Vec3f>(y*workImage.cols+x) = Vec3f(0,0,200);
+              outputImage.at<Vec3f>(y*workImage.cols+x) = Vec3f(0,0,200); //set pixel red
             }else{
-                outputImage.at<Vec3f>(y*workImage.cols+x) = Vec3f(0,0,0);
+                outputImage.at<Vec3f>(y*workImage.cols+x) = Vec3f(0,0,0); // set pixel black
             }
         }
     }
@@ -176,31 +186,30 @@ void changeThreshold(int thresholdSliderValue, void *){
 
 
 int main( int argc, char** argv ){
-    string imageName("./HappyFish.jpg"); // by default
-    if( argc > 1){
-        imageName = argv[1];
-    }
+    string imageName("./test3.png"); // by default
+    if( argc > 1){ imageName = argv[1];}
     inputImage = imread(imageName.c_str(), IMREAD_COLOR);
-    inputImage.convertTo(workImage, CV_32FC3, 1/255.0);
-
-    namedWindow("original", WINDOW_AUTOSIZE);
-    imshow("original", workImage);
-
-    outputImage = Mat(workImage.rows, workImage.cols,CV_32FC3, Scalar(0,0,0));
     if( inputImage.empty() ){
         cout <<  "Could not open or find the image" << std::endl ;
         return -1;
     }
+    //build matrices
+    inputImage.convertTo(workImage, CV_32FC3, 1/255.0);
+    outputImage = Mat(workImage.rows, workImage.cols,CV_32FC3, Scalar(0,0,0));
+    //output of original Image
+    namedWindow("original", WINDOW_AUTOSIZE);
+    imshow("original", workImage);
+
     //build Window
     namedWindow("Harris Corner Detector", WINDOW_AUTOSIZE );
     //build Trackbars
-    sigma_value=20;
+    sigma_value=40;
     alpha_value = 1;
-    threshold_value =1;
+    threshold_value =6;
     createTrackbar(sigmaTrackbar, "Harris Corner Detector", &sigma_value , sigma_max, changeSigma );
     createTrackbar(alphaTrackbar, "Harris Corner Detector",&alpha_value, alpha_max, changeAlpha );
     createTrackbar(thresholdTrackbar, "Harris Corner Detector", &threshold_value, threshold_max , changeThreshold );
-    //build Image functions here!
+    //first onchange function here!
    changeSigma(sigma_value ,0);
     waitKey(0); // Wait for a keystroke in the window
     return 0;
